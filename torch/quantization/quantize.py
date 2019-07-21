@@ -150,6 +150,11 @@ def prepare_qat(model, qconfig_dict=None):
     model = convert(model, DEFAULT_QAT_MODULE_MAPPING)
     return model
 
+def prepare_dynamic(model, qconfig_dict=None):
+    propagate_qconfig(model, qconfig_dict)
+    add_observer(model)
+    return model
+
 class QuantStub(nn.Module):
     r"""Quantize stub module, before calibration, this is same as an observer,
     it will be swapped as `nnq.Quantize` in `convert`.
@@ -220,6 +225,15 @@ def quantize_qat(model, run_fn, run_args, qconfig_dict=None):
     convert(model)
     return model
 
+def quantize_dynamic(model, run_fn, run_args, qconfig_dict=None):
+    r"""Converts a float model to dynamic quantized model. Do dynamic training and output a quantized model.
+    """
+    model.eval()
+    model = prepare_dynamic(model, qconfig_dict)
+    run_fn(model, run_args)
+    convert(model, DEFAULT_DYNAMIC_MODULE_MAPPING)
+    return model
+
 # Map for swapping float module to quantized ones
 DEFAULT_MODULE_MAPPING = {
     torch.nn.Linear: nnq.Linear,
@@ -235,6 +249,10 @@ DEFAULT_MODULE_MAPPING = {
 DEFAULT_QAT_MODULE_MAPPING = {
     torch.nn.Linear: qat.Linear,
     torch.nn.Conv2d: qat.Conv2d,
+}
+
+DEFAULT_DYNAMIC_MODULE_MAPPING = {
+    torch.nn.Linear: nnq.DynamicLinear
 }
 
 def convert(module, mapping=DEFAULT_MODULE_MAPPING):
@@ -259,6 +277,9 @@ def convert(module, mapping=DEFAULT_MODULE_MAPPING):
         setattr(module_swapped, name, mod)
 
     return module_swapped
+
+def convert_dynamic(module, mapping=DEFAULT_DYNAMIC_MODULE_MAPPING):
+    convert(module, mapping)
 
 def swap_module(mod, mapping):
     r"""Swaps the module if it has a quantized counterpart and it has an

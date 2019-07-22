@@ -155,6 +155,8 @@ def load(f, map_location=None, _extra_files=DEFAULT_EXTRA_FILES_MAP):
                 self.base_module = ScriptModule(_qualified_name=names[0], _compilation_unit=self.cu)
             curr = self.base_module
             qualified_name = self.base_module._c.name
+            print(qualified_name)
+            print(names)
             assert(qualified_name == names[0])
 
             # Skip the first name as we already used it to initialize `curr`

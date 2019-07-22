@@ -153,7 +153,6 @@ void ScriptModuleDeserializer::deserialize(
 
   // TODO: this can be simplified when C++/Python interop lands,
   // and the submodules would be created as the same in either C++ or Python
-  moduleStack_.emplace_back(module_def.name());
   convertModule(module_def);
 }
 
@@ -253,10 +252,13 @@ at::Tensor ScriptModuleDeserializer::loadTensor(
 }
 
 void ScriptModuleDeserializer::importCallback(const std::string& qualifier) {
+  LOG(ERROR) << "Calling import callback on: " << qualifier;
   if (imported_libs_.count(qualifier)) {
     return;
   }
+  LOG(ERROR) << "importing";
   imported_libs_.insert(qualifier);
+  LOG(ERROR) << std::vector<std::string>(imported_libs_.begin(), imported_libs_.end());
   std::function<void(const std::string&)> import_callback =
       [this](const std::string& qualifier) { importCallback(qualifier); };
   const std::string path = ImportExportHelpers::qualifierToPath(qualifier);
@@ -290,73 +292,115 @@ void ScriptModuleDeserializer::moduleSetState(
 
 void ScriptModuleDeserializer::convertModule(
     const torch::ModuleDef& module_def) {
-  script::Module module = moduleLookup_(moduleStack_);
-  module.set_optimized(module_def.optimize());
-  for (int i = 0; i < module_def.submodules_size(); ++i) {
-    const torch::ModuleDef& sub_def = module_def.submodules(i);
-    moduleStack_.emplace_back(sub_def.name());
-    convertModule(sub_def);
-    moduleStack_.pop_back();
-  }
-  for (int i = 0; i < module_def.parameters_size(); ++i) {
-    const torch::ParameterDef& param_def = module_def.parameters(i);
-    at::Tensor tensor = tensor_table_.at(param_def.tensor_id());
-    if (param_def.is_buffer()) {
-      module.register_buffer(param_def.name(), tensor);
-    } else {
-      module.register_parameter(param_def.name(), tensor, /*is_buffer=*/false);
-    }
-  }
-  script::ScriptTypeParser typeParser(
-      std::make_shared<ClassResolver>(compilation_unit_));
-  for (int i = 0; i < module_def.attributes_size(); ++i) {
-    const torch::AttributeDef& attr_def = module_def.attributes(i);
-    if (module.find_buffer(attr_def.name())) {
-      // TODO: handle this above so this can be removed
-      continue;
-    }
-
-    IValue ivalue;
-    if (attr_def.id() >= 0) {
-      // attribute has no value in the table, set it to None for now. After
-      // __getstate__, check that all the attributes that are not Optional
-      // can't be None
-      ivalue = pickled_ivalues_.at(attr_def.id());
-    }
-
-    module.register_attribute(
-        attr_def.name(), typeParser.parseType(attr_def.type()), ivalue);
-  }
-
   // If present, load in the table of source ranges from the original
   // generating code.
   std::shared_ptr<SourceRangeUnpickler> gen_ranges = nullptr;
-  if (module_def.has_torchscript_debug_arena()) {
-    at::DataPtr data;
-    size_t size;
-    std::tie(data, size) =
-        reader_->getRecord(module_def.torchscript_debug_arena().key());
+  // if (module_def.has_torchscript_debug_arena()) {
+  //   at::DataPtr data;
+  //   size_t size;
+  //   std::tie(data, size) =
+  //       reader_->getRecord(module_def.torchscript_debug_arena().key());
 
-    gen_ranges =
-        std::make_shared<ConcreteSourceRangeUnpickler>(std::move(data), size);
-  }
+  //   gen_ranges =
+  //       std::make_shared<ConcreteSourceRangeUnpickler>(std::move(data),
+  //       size);
+  // }
+  // import the module_def.
+  at::DataPtr attributes_ptr;
+  size_t attributes_size;
+  std::tie(attributes_ptr, attributes_size) = reader_->getRecord("module.pkl");
+  Unpickler unpickler(
+      attributes_ptr.get(),
+      attributes_size,
+      &tensor_table_,
+      [&](const c10::QualifiedName& qn) {
+        importCallback(qn.prefix());
+        return c10::StrongTypePtr(
+            compilation_unit_, compilation_unit_->get_class(qn));
+      });
+  auto module = script::Module(unpickler.parseModule().toObject());
 
-  if (module_def.has_torchscript_arena()) {
-    at::DataPtr data;
-    size_t size;
-    std::tie(data, size) =
-        reader_->getRecord(module_def.torchscript_arena().key());
-    std::string data_str(static_cast<const char*>(data.get()), size);
-    auto src = std::make_shared<Source>(
-        std::string(static_cast<const char*>(data.get()), size),
-        module_def.torchscript_arena().key(),
-        1,
-        std::move(gen_ranges));
+  module.set_optimized(module_def.optimize());
 
-    std::function<void(const std::string&)> import_callback =
-        [&, this](const std::string& qualifier) { importCallback(qualifier); };
-    script::import_methods(module, src, tensor_table_, import_callback);
-  }
+  // if (module_def.has_torchscript_arena()) {
+  //   at::DataPtr data;
+  //   size_t size;
+  //   std::tie(data, size) =
+  //       reader_->getRecord(module_def.torchscript_arena().key());
+  //   std::string data_str(static_cast<const char*>(data.get()), size);
+  //   auto src = std::make_shared<Source>(
+  //       std::string(static_cast<const char*>(data.get()), size),
+  //       module_def.torchscript_arena().key(),
+  //       1,
+  //       std::move(gen_ranges));
+
+  //   std::function<void(const std::string&)> import_callback =
+  //       [&, this](const std::string& qualifier) {
+  //         importCallback(module.class_compilation_unit(), qualifier);
+  //       };
+  //   LOG(ERROR) << "am I calling this tho?";
+  //   LOG(ERROR) << src->text();
+  //   // script::import_module(module, src, tensor_table_, import_callback);
+  // }
+
+  // script::Module module = moduleLookup_(moduleStack_);
+  // module.set_optimized(module_def.optimize());
+  // for (int i = 0; i < module_def.submodules_size(); ++i) {
+  //   const torch::ModuleDef& sub_def = module_def.submodules(i);
+  //   moduleStack_.emplace_back(sub_def.name());
+  //   convertModule(sub_def);
+  //   moduleStack_.pop_back();
+  // }
+  // for (int i = 0; i < module_def.parameters_size(); ++i) {
+  //   const torch::ParameterDef& param_def = module_def.parameters(i);
+  //   at::Tensor tensor = tensor_table_.at(param_def.tensor_id());
+  //   if (param_def.is_buffer()) {
+  //     module.register_buffer(param_def.name(), tensor);
+  //   } else {
+  //     module.register_parameter(param_def.name(), tensor,
+  //     /*is_buffer=*/false);
+  //   }
+  // }
+  // script::ScriptTypeParser typeParser;
+  // for (int i = 0; i < module_def.attributes_size(); ++i) {
+  //   const torch::AttributeDef& attr_def = module_def.attributes(i);
+  //   if (module.find_buffer(attr_def.name())) {
+  //     // TODO: handle this above so this can be removed
+  //     continue;
+  //   }
+
+  //   IValue ivalue;
+  //   if (attr_def.id() >= 0) {
+  //     // attribute has no value in the table, set it to None for now. After
+  //     // __getstate__, check that all the attributes that are not Optional
+  //     // can't be None
+  //     ivalue = pickled_ivalues_.at(attr_def.id());
+  //   }
+
+  //   module.register_attribute(
+  //       attr_def.name(), typeParser.parseType(attr_def.type()), ivalue);
+  // }
+
+  // if (module_def.has_torchscript_arena()) {
+  //   at::DataPtr data;
+  //   size_t size;
+  //   std::tie(data, size) =
+  //       reader_.getRecord(module_def.torchscript_arena().key());
+  //   std::string data_str(static_cast<const char*>(data.get()), size);
+  //   auto src = std::make_shared<Source>(
+  //       std::string(static_cast<const char*>(data.get()), size),
+  //       module_def.torchscript_arena().key(),
+  //       1,
+  //       std::move(gen_ranges));
+
+  //   std::function<void(const std::string&)> import_callback =
+  //       [this](const std::string& qualifier) { importCallback(qualifier); };
+  //   script::import_methods(
+  //       module,
+  //       src,
+  //       tensor_table_,
+  //       import_callback);
+  // }
 
   if (module_def.has_get_state_attribute_id()) {
     moduleSetState(

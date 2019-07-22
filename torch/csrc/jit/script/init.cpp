@@ -544,12 +544,7 @@ void initJitScriptBindings(PyObject* module) {
             std::vector<c10::NamedTypePtr> classes;
             SourceRangeRecords source_ranges;
             PythonPrint(
-                ss,
-                source_ranges,
-                self,
-                tensors,
-                classes,
-                false);
+                ss, source_ranges, self.type(), tensors, classes, false);
             return ss.str();
           })
       .def("apply", &Module::apply)
@@ -843,13 +838,7 @@ void initJitScriptBindings(PyObject* module) {
     std::vector<c10::NamedTypePtr> classes;
     SourceRangeRecords source_ranges;
     if (auto self = as_module(obj)) {
-      PythonPrint(
-          ss,
-          source_ranges,
-          *self,
-          constants,
-          classes,
-          true);
+      PythonPrint(ss, source_ranges, self->type(), constants, classes, true);
     } else if (auto self = as_function(obj)) {
       PythonPrint(
           ss, source_ranges, *self->function_, false, constants, classes, true);
